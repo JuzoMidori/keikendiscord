@@ -16,6 +16,8 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode  = require('qrcode');
 const axios   = require('axios');
 const express = require('express');
+const fs      = require('fs');
+const path    = require('path');
 
 const PORT         = process.env.PORT               || 3000;
 const API_SECRET   = process.env.API_SECRET         || 'keiken_bridge_secret';
@@ -24,6 +26,38 @@ const GROUP_JID    = process.env.WHATSAPP_GROUP_JID  || '120363409291163831@g.us
 
 const app    = express();
 app.use(express.json());
+
+// ── Find Chrome executable (works on Render and locally) ──────────────────────
+function findChrome() {
+    const candidates = [
+        // Render cache location
+        '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome',
+        // Generic Render cache glob fallback
+        ...(() => {
+            try {
+                const base = '/opt/render/.cache/puppeteer/chrome';
+                if (!fs.existsSync(base)) return [];
+                return fs.readdirSync(base).map(v =>
+                    path.join(base, v, 'chrome-linux64', 'chrome')
+                );
+            } catch { return []; }
+        })(),
+        // System Chrome
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chromium',
+    ];
+    for (const c of candidates) {
+        if (fs.existsSync(c)) {
+            console.log(`✅ Found Chrome at: ${c}`);
+            return c;
+        }
+    }
+    console.warn('⚠️  Chrome not found in known locations — letting Puppeteer auto-detect');
+    return undefined;
+}
+
+const CHROME_PATH = findChrome();
 
 // ── State ──────────────────────────────────────────────────────────────────────
 let waReady   = false;
@@ -38,19 +72,22 @@ function requireSecret(req, res, next) {
 }
 
 // ── WhatsApp client ────────────────────────────────────────────────────────────
+const puppeteerConfig = {
+    headless: true,
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process',
+        '--no-zygote',
+    ]
+};
+if (CHROME_PATH) puppeteerConfig.executablePath = CHROME_PATH;
+
 const client = new Client({
     authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--single-process',
-            '--no-zygote',
-        ]
-    }
+    puppeteer: puppeteerConfig
 });
 
 client.on('qr', async (qr) => {
