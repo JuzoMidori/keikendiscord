@@ -19,49 +19,68 @@ const express = require('express');
 const fs      = require('fs');
 const path    = require('path');
 
-const PORT         = process.env.PORT               || 3000;
-const API_SECRET   = process.env.API_SECRET         || 'keiken_bridge_secret';
-const WEBHOOK_URL  = process.env.DISCORD_WEBHOOK_URL || '';
-const GROUP_JID    = process.env.WHATSAPP_GROUP_JID  || '120363409291163831@g.us';
+const PORT        = process.env.PORT               || 3000;
+const API_SECRET  = process.env.API_SECRET         || 'keiken_bridge_secret';
+const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || '';
+const GROUP_JID   = process.env.WHATSAPP_GROUP_JID  || '120363409291163831@g.us';
 
-const app    = express();
+const app = express();
 app.use(express.json());
 
-// ── Find Chrome executable (works on Render and locally) ──────────────────────
+// ── Find Chrome executable ────────────────────────────────────────────────────
+// Primary: honour explicit env var (set this on Render if auto-detect ever fails)
+// Secondary: scan the custom --path we passed to `npx puppeteer browsers install`
+// Tertiary: fall back to system Chrome paths
 function findChrome() {
-    const candidates = [
-        // Render — installed into project folder during build (persists at runtime)
-        ...(() => {
-            try {
-                const base = '/opt/render/project/src/.chrome/chrome';
-                if (!fs.existsSync(base)) return [];
-                return fs.readdirSync(base).map(v =>
-                    path.join(base, v, 'chrome-linux64', 'chrome')
-                );
-            } catch { return []; }
-        })(),
-        // System Chrome fallbacks
+    // 1. Explicit override via env
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+        console.log(`✅ Chrome from env: ${process.env.PUPPETEER_EXECUTABLE_PATH}`);
+        return process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+
+    // 2. Scan the custom install path used in the build command:
+    //    npx puppeteer browsers install chrome --path /opt/render/project/src/.chrome
+    //    Installed layout: .chrome/chrome/{version-folder}/chrome-linux64/chrome
+    const customBase = path.join(__dirname, '.chrome', 'chrome');
+    if (fs.existsSync(customBase)) {
+        try {
+            const versions = fs.readdirSync(customBase);
+            for (const v of versions) {
+                const candidate = path.join(customBase, v, 'chrome-linux64', 'chrome');
+                if (fs.existsSync(candidate)) {
+                    console.log(`✅ Found Chrome at: ${candidate}`);
+                    return candidate;
+                }
+            }
+        } catch (e) {
+            console.warn('⚠️  Error scanning .chrome dir:', e.message);
+        }
+    }
+
+    // 3. System Chrome fallbacks
+    const systemPaths = [
         '/usr/bin/google-chrome',
         '/usr/bin/chromium-browser',
         '/usr/bin/chromium',
     ];
-    for (const c of candidates) {
+    for (const c of systemPaths) {
         if (fs.existsSync(c)) {
-            console.log(`✅ Found Chrome at: ${c}`);
+            console.log(`✅ Found system Chrome at: ${c}`);
             return c;
         }
     }
-    console.warn('⚠️  Chrome not found — letting Puppeteer auto-detect');
+
+    console.warn('⚠️  Chrome not found — letting Puppeteer auto-detect via .puppeteerrc.cjs');
     return undefined;
 }
 
 const CHROME_PATH = findChrome();
 
-// ── State ──────────────────────────────────────────────────────────────────────
+// ── State ─────────────────────────────────────────────────────────────────────
 let waReady   = false;
-let lastQrB64 = null;   // latest QR as base64 PNG — shown at GET /
+let lastQrB64 = null;
 
-// ── Auth middleware ────────────────────────────────────────────────────────────
+// ── Auth middleware ───────────────────────────────────────────────────────────
 function requireSecret(req, res, next) {
     if (req.headers['x-secret'] !== API_SECRET) {
         return res.status(401).json({ error: 'unauthorized' });
@@ -69,7 +88,7 @@ function requireSecret(req, res, next) {
     next();
 }
 
-// ── WhatsApp client ────────────────────────────────────────────────────────────
+// ── WhatsApp client ───────────────────────────────────────────────────────────
 const puppeteerConfig = {
     headless: true,
     args: [
@@ -144,9 +163,8 @@ client.on('disconnected', (reason) => {
     setTimeout(() => client.initialize(), 10000);
 });
 
-// ── HTTP API endpoints ─────────────────────────────────────────────────────────
+// ── HTTP endpoints ────────────────────────────────────────────────────────────
 
-// GET / — show QR code in browser (no auth needed — it's just a QR image)
 app.get('/', (req, res) => {
     if (waReady) {
         return res.send(`
@@ -176,12 +194,10 @@ app.get('/', (req, res) => {
     `);
 });
 
-// GET /status — called by bot.py to check connection
 app.get('/status', requireSecret, (req, res) => {
     res.json({ ready: waReady, group: GROUP_JID });
 });
 
-// POST /send — called by bot.py to send Discord messages to WhatsApp
 app.post('/send', requireSecret, async (req, res) => {
     const { text } = req.body;
     if (!text) return res.status(400).json({ error: 'text required' });
@@ -198,7 +214,7 @@ app.post('/send', requireSecret, async (req, res) => {
     }
 });
 
-// ── Start ──────────────────────────────────────────────────────────────────────
+// ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
     console.log(`🚀 Bridge API server running on port ${PORT}`);
     console.log(`   Open your server URL in a browser to scan the WhatsApp QR code`);
