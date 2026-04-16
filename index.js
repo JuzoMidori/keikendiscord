@@ -30,19 +30,17 @@ app.use(express.json());
 // ── Find Chrome executable (works on Render and locally) ──────────────────────
 function findChrome() {
     const candidates = [
-        // Render cache location
-        '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome',
-        // Generic Render cache glob fallback
+        // Render — installed into project folder during build (persists at runtime)
         ...(() => {
             try {
-                const base = '/opt/render/.cache/puppeteer/chrome';
+                const base = '/opt/render/project/src/.chrome/chrome';
                 if (!fs.existsSync(base)) return [];
                 return fs.readdirSync(base).map(v =>
                     path.join(base, v, 'chrome-linux64', 'chrome')
                 );
             } catch { return []; }
         })(),
-        // System Chrome
+        // System Chrome fallbacks
         '/usr/bin/google-chrome',
         '/usr/bin/chromium-browser',
         '/usr/bin/chromium',
@@ -53,7 +51,7 @@ function findChrome() {
             return c;
         }
     }
-    console.warn('⚠️  Chrome not found in known locations — letting Puppeteer auto-detect');
+    console.warn('⚠️  Chrome not found — letting Puppeteer auto-detect');
     return undefined;
 }
 
